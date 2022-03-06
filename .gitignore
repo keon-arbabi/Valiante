@@ -3,3 +3,4 @@
 .RData
 .Ruserdata
 input
+output/seu_obj.rds
