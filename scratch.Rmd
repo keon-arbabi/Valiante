@@ -1,0 +1,31 @@
+---
+title: "scratch"
+author: "Keon Arbabi"
+date: "03/03/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# load libraries 
+```{r}
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(GEOquery)
+  library(limma)
+  library(HelpersMG)
+})
+
+```
+
+# load data
+```{r}
+
+wget(c("http://pklab.med.harvard.edu/viktor/publications/Epilepsy19/count_matrices.rds",
+       "http://pklab.med.harvard.edu/viktor/publications/Epilepsy19/con_filt_cells.rds",
+       "http://pklab.med.harvard.edu/viktor/publications/Epilepsy19/con_filt_samples.rds"))
+
+```
