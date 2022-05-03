@@ -3,6 +3,8 @@ title: "scratch"
 author: "Keon Arbabi"
 date: "03/03/2022"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r setup, include=FALSE}
@@ -11,7 +13,6 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # load libraries 
 ```{r}
-
 suppressPackageStartupMessages({
   library(tidyverse)
   library(GEOquery)
@@ -20,12 +21,12 @@ suppressPackageStartupMessages({
   library(Seurat)
   library(matrixStats)
   library(ggpubr)
+  library(ggbeeswarm)
 })
 ```
 
 # download data
 ```{r}
-
 if(F){
   wget(c("http://pklab.med.harvard.edu/viktor/publications/Epilepsy19/count_matrices.rds",
          "http://pklab.med.harvard.edu/viktor/publications/Epilepsy19/con_filt_cells.rds",
@@ -35,7 +36,6 @@ if(F){
 
 # functions
 ```{r}
-
 convertMouseGeneList = function(x){
   require("biomaRt")
   human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
@@ -50,7 +50,6 @@ convertMouseGeneList = function(x){
 
 # prepare data 
 ```{r}
-
 # read sample metadata
 samples_metadata = read.csv(file = "./input/sample_info.csv") %>%
   mutate(Condition = case_when(Alias %in% c("C1","C2","C3","C4","C5","C6","C7","C8","C9","C10") ~ "Control",
@@ -181,9 +180,9 @@ if(F){
 
 ```
 
+# visualize
 ```{r}
-
-res = read.csv(file = "./output/res.csv")
+res = read.csv(file = "./output/res.csv") %>% column_to_rownames(var = "X")
 
 # get genes significantly associated with membrane potential and rheobase
 select_genes = read.csv(file = "./input/Tripathy_2017_ephys_genes.csv")[,-1] %>%
@@ -194,8 +193,10 @@ hgnc = convertMouseGeneList(select_genes$MGI.symbol)
 select_genes = left_join(select_genes, hgnc, by = "MGI.symbol") 
 select_genes = select_genes %>% filter(EphysProp %in% c("Vrest","Rheo")) %>% pull(HGNC.symbol)
 
-# same number of random genes for comparison
-random_genes = res %>% sample_n(length(select_genes)) %>% pull(gene)
+# get same number of random, protein-coding genes for comparison
+mart = biomaRt::useMart(biomart = "ensembl", dataset = "hsapiens_gene_ensembl")
+protein_genes = biomaRt::getBM(attributes = c("hgnc_symbol", "gene_biotype"), filters = c("hgnc_symbol", "biotype"), values = list(unique(res$gene), "protein_coding"), mart = mart)
+random_genes = intersect(res$gene, protein_genes$hgnc_symbol) %>% sample(.,length(select_genes), replace = FALSE)
 
 res_select_control = res %>% filter(gene %in% select_genes, condition == "Control") 
 res_select_epilepsy = res %>% filter(gene %in% select_genes, condition == "Epilepsy") 
@@ -208,12 +209,12 @@ res %>%
   geom_point(data = res_select_epilepsy, aes(x = mean, y = sd), color = "darkorange", alpha = 0.5, size = 2, shape = 16) +
   labs(x = "mean normalized expression", y = "expression standard deviation") +
   theme_classic()
-ggsave(filename = paste0("./output/figures/ephy_genes_meansd.jpeg"), width = 9, height = 5)
+#ggsave(filename = paste0("./output/figures/ephy_genes_meansd.jpeg"), width = 9, height = 5)
 
 # compare expression sd 
 res %>%
   mutate(ephys_gene = case_when(gene %in% select_genes ~ "Vrest & rheobase associated genes", 
-                                gene %in% random_genes ~ "Random genes",
+                                gene %in% random_genes ~ "Random protein-coding genes",
                                 TRUE ~ "All genes")) %>% 
   mutate(ephys_gene, factor(ephys_gene)) %>%
   ggplot(aes(x = condition, y = sd)) + 
@@ -225,7 +226,25 @@ res %>%
   theme_classic() +
   theme(legend.position = "none") +
   stat_compare_means(method = "wilcox", aes(group = condition), label.y = 1, label.x = 0.6, size = 3)
-ggsave(filename = paste0("./output/figures/ephy_genes_sdboxplots.jpeg"), width = 9, height = 6)
+#ggsave(filename = paste0("./output/figures/ephy_genes_sdboxplots.jpeg"), width = 9, height = 6)
+
+# compare expression sd by CT
+res %>%
+  mutate(ephys_gene = case_when(gene %in% select_genes ~ "Vrest & rheobase associated genes", 
+                                gene %in% random_genes ~ "Random protein-coding genes",
+                                TRUE ~ "All genes")) %>% 
+  #filter(gene %in% select_genes) %>%
+  ggplot(aes(x = condition, y = mean)) + 
+  geom_boxplot(aes(fill = condition), outlier.shape = NA) +
+  geom_quasirandom(na.rm = T, shape = 16, alpha = 0.1) + 
+  scale_fill_manual(breaks = c("Control","Epilepsy"), values = c("darkgreen","darkorange")) +
+  labs(x = "condition", y = "standard deviation of expression") +
+  coord_flip() +
+  facet_grid(cell_type ~ ephys_gene, scales = "free") +
+  theme_classic() +
+  theme(legend.position = "none") +
+  stat_compare_means(ref.group = "Control", label = "p.signif", method = "wilcox", label.y = 0.8) 
+ggsave(filename = paste0("./output/figures/ephy_genes_sdboxplots2.jpeg"), width = 9, height = 12)
 
   
 ```
