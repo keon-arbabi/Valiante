@@ -17,8 +17,9 @@ suppressPackageStartupMessages({
   library(tidyverse)
   library(GEOquery)
   library(limma)
-  library(HelpersMG)
+  #library(HelpersMG)
   library(Seurat)
+  library(glmGamPoi)
   library(matrixStats)
   library(ggpubr)
   library(ggbeeswarm)
@@ -38,8 +39,8 @@ if(F){
 ```{r}
 convertMouseGeneList = function(x){
   require("biomaRt")
-  human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
-  mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+  human = useMart("ensembl", dataset = "hsapiens_gene_ensembl", host = "https://dec2021.archive.ensembl.org/")
+  mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl", host = "https://dec2021.archive.ensembl.org/")
   genesV2 = getLDS(attributes = c("mgi_symbol"), filters = "mgi_symbol", values = x , mart = mouse, attributesL = c("hgnc_symbol"), martL = human, uniqueRows=T)
   mousex = unique(genesV2[, 2])
   # Print the first 6 genes found to the screen
@@ -51,17 +52,17 @@ convertMouseGeneList = function(x){
 # prepare data 
 ```{r}
 # read sample metadata
-samples_metadata = read.csv(file = "./input/sample_info.csv") %>%
+samples_metadata = read.csv(url("https://raw.githubusercontent.com/khodosevichlab/Epilepsy19/master/metadata/sample_info.csv")) %>%
   mutate(Condition = case_when(Alias %in% c("C1","C2","C3","C4","C5","C6","C7","C8","C9","C10") ~ "Control",
                                Alias %in% c("E1","E2","E3","E4","E5","E6","E7","E8","E9") ~ "Epilepsy"))
 # read cell annotation metadata 
-annot_metadata = read.csv(file = "./input/annotation.csv")
+annot_metadata = read.csv(url("https://raw.githubusercontent.com/khodosevichlab/Epilepsy19/master/metadata/annotation.csv"))
 rownames(annot_metadata) = annot_metadata$cell
 
 # read counts
 counts_lst = readRDS(file = "./input/count_matrices.rds")
 counts_lst = counts_lst[names(counts_lst) != "NeuN"]
-
+# get number of cells from each subject and add to metadata
 samps = lapply(counts_lst, function(x){
   return(data.frame(cells = ncol(x)))
 })
@@ -75,7 +76,6 @@ samps = c(rep(samps[,1], times = samps[,2]))
 counts_matrix = do.call(cbind, counts_lst)
 dim(counts_matrix)
 cells = colnames(counts_matrix)
-
 # rename columns using unique sample id
 colnames(counts_matrix) = paste(samps, cells, sep = "_")
 
@@ -87,19 +87,17 @@ rownames(metadata) = metadata$cell
 
 # filter to match annotation metadata 
 counts_matrix = counts_matrix[,colnames(counts_matrix) %in% metadata$cell]
+dim(counts_matrix)
 metadata = metadata %>% filter(cell %in% colnames(counts_matrix))
 
 # create Seurat object 
-seu_obj = Seurat::CreateSeuratObject(counts = counts_matrix,
-                                     meta.data = metadata)
+seu_obj = CreateSeuratObject(counts = counts_matrix, meta.data = metadata)
 head(x = rownames(x = seu_obj))
 head(x = colnames(x = seu_obj))
-
-# # visualize QC metrics as a violin plot
-# seu_obj[["percent.mt"]] = PercentageFeatureSet(seu_obj, pattern = "^MT-")
-# VlnPlot(seu_obj, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, pt.size = 0)
-# # save Seurat object 
-# saveRDS(seu_obj, file = "./output/seu_obj.rds")
+# normalize
+seu_obj = SCTransform(seu_obj, method = "glmGamPoi", verbose = TRUE)
+# save Seurat object
+saveRDS(seu_obj, file = "./output/seu_obj.rds")
 
 ```
 
