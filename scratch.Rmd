@@ -131,7 +131,7 @@ head(x = colnames(x = seu_obj))
 
 ```
 
-# calculate expression stdev and mean within cell types
+# calculate intra-individual gene variance 
 ```{r}
 # load normalized Seurat object 
 seu_obj_norm = readRDS(file = "./output/seu_obj_norm.rds")
@@ -164,16 +164,16 @@ for(CT in unique(metadata$l2)){
       mutate(CV = Stdev/(Mean*100))
     # save
     res = rbind(res, tmp)
-    # # visualize gene mean-variance relationship
-    # tmp %>%
-    #   as.data.frame() %>%
-    #   ggplot(., aes(x = log10(Mean), y = Var)) +
-    #   geom_point(alpha = 0.5, fill = "grey", colour = "black") +
-    #   geom_density_2d(size = 0.3) +
-    #     labs(x = "Log10(Mean expression)", 
-    #          y = "Residual variance") +
-    #     ggtitle("Gene Mean-Variance Relationship") 
-    # ggsave(filename = paste0("./figures/qc/sct_",INDV,"_",CT,".jpeg"), width = 6, height = 5.5)
+    # visualize gene mean-variance relationship
+    tmp %>%
+      as.data.frame() %>%
+      ggplot(., aes(x = log10(Mean), y = Var)) +
+      geom_point(alpha = 0.5, fill = "grey", colour = "black") +
+      geom_density_2d(size = 0.3) +
+        labs(x = "Log10(Mean expression)",
+             y = "Residual variance") +
+        ggtitle("Gene Mean-Variance Relationship")
+    ggsave(filename = paste0("./figures/qc/sct_",INDV,"_",CT,".jpeg"), width = 6, height = 5.5)
   }
 }
 res = left_join(res, distinct(metadata[,c(6:10)]), by = "Name") 
@@ -186,6 +186,13 @@ write.csv(res, file = "./output/res.csv")
 ```{r}
 # load 
 res = read.csv(file = "./output/res.csv") %>% column_to_rownames(var = "X")
+# total mean-variance trend
+ggplot(res, aes(x = log10(Mean), y = Var)) +
+      geom_point(alpha = 0.5, fill = "grey", colour = "black") +
+      geom_density_2d(size = 0.3) +
+        labs(x = "Log10(Mean expression)",
+             y = "Residual variance") +
+        ggtitle("Gene Mean-Variance Relationship")
 
 # get genes significantly associated with membrane potential and rheobase
 select_genes = read.csv(file = "./input/Tripathy_2017_ephys_genes.csv")[,-1] %>%
@@ -201,8 +208,8 @@ mart = biomaRt::useMart(biomart = "ensembl", dataset = "hsapiens_gene_ensembl")
 protein_genes = biomaRt::getBM(attributes = c("hgnc_symbol", "gene_biotype"), filters = c("hgnc_symbol", "biotype"), values = list(unique(res$gene), "protein_coding"), mart = mart)
 random_genes = intersect(res$gene, protein_genes$hgnc_symbol) %>% sample(.,length(select_genes), replace = FALSE)
 
-res_select_control = res %>% filter(gene %in% select_genes, condition == "Control") 
-res_select_epilepsy = res %>% filter(gene %in% select_genes, condition == "Epilepsy") 
+res_select_control = res %>% filter(Gene %in% select_genes, condition == "Control") 
+res_select_epilepsy = res %>% filter(Gene %in% select_genes, condition == "Epilepsy") 
 
 # mean-sd plot colored by condition for ephys associated genes 
 res %>%
