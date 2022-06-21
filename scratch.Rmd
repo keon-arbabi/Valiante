@@ -17,7 +17,7 @@ suppressPackageStartupMessages({
   library(tidyverse)
   library(GEOquery)
   library(limma)
-  #library(HelpersMG)
+  library(HelpersMG)
   library(Seurat)
   library(glmGamPoi)
   library(matrixStats)
@@ -90,96 +90,74 @@ counts_matrix = counts_matrix[,colnames(counts_matrix) %in% metadata$cell]
 dim(counts_matrix)
 metadata = metadata %>% filter(cell %in% colnames(counts_matrix))
 
-# create Seurat object 
+# create Seurat object
 seu_obj = CreateSeuratObject(counts = counts_matrix, meta.data = metadata)
 head(x = rownames(x = seu_obj))
 head(x = colnames(x = seu_obj))
-# normalize
-seu_obj = SCTransform(seu_obj, method = "glmGamPoi", verbose = TRUE)
-# save Seurat object
-saveRDS(seu_obj, file = "./output/seu_obj.rds")
+
+# # normalize
+# # https://doi.org/10.1186/s13059-019-1874-1
+# seu_obj = SCTransform(seu_obj, method = "glmGamPoi", verbose = TRUE)
+# # save Seurat object
+# saveRDS(seu_obj, file = "./output/seu_obj.rds")
 
 ```
 
 # calculate expression stdev and mean within cell types
 ```{r}
+# load normalized Seurat object 
+seu_obj_norm = readRDS(file = "./output/seu_obj_norm.rds")
+table(metadata$Name, metadata$l2)
+# remove subject with low cell counts 
+seu_obj_norm = subset(seu_obj_norm, subset = Name == "HB51", invert = TRUE)
+metadata = metadata %>% filter(!Name == "HB51")
+# initialize
+res = NULL
 
-# reload Seurat object from above 
-#seu_obj = readRDS(file = "./output/seu_obj.rds")
-
-if(F){
-  for(disorder in unique(metadata$Condition)){
-    for(CT in unique(metadata$l2)){
-      # subset by combination of condition and cell type 
-      seu_tmp = subset(seu_obj, subset = Condition == disorder & l2 == CT)
-      # get normalized and variance-stabilized expression 
-      # https://doi.org/10.1186/s13059-019-1874-1
-      seu_tmp = SCTransform(seu_tmp, verbose = FALSE)
-      # get un-normalized counts
-      unnorm_matrix = seu_tmp@assays$RNA@counts %>% as.matrix()
-      # visualize mean-variance relationship 
-      p1 = unnorm_matrix %>%
-        as.data.frame() %>% 
-        rownames_to_column("gene") %>% 
-        pivot_longer(cols = - gene, names_to = "sample", values_to = "counts") %>% 
-        dplyr::group_by(gene) %>% 
-        dplyr::summarise(gene_average = mean(counts), gene_stdev = sd(counts)) %>% 
-        ungroup() %>%
-        ggplot(., aes(x = log10(gene_average), y = log10(gene_stdev))) +
-          geom_point(alpha = 0.5, fill = "grey", colour = "black") +
-          labs(x = "Gene count average (log10)", 
-               y = "Gene count standard deviation (log10)") +
-          ggtitle("Mean - Standard deviation relationship")
-
-      rm(unnorm_matrix)
-      gc()
-      
-      # get normalized expression 
-      sct_matrix = seu_tmp@assays$SCT@data %>% as.matrix()
-      # visualize mean-variance relationship 
-      p2 = sct_matrix %>%
-        as.data.frame() %>% 
-        rownames_to_column("gene") %>% 
-        pivot_longer(cols = - gene, names_to = "sample", values_to = "counts") %>% 
-        dplyr::group_by(gene) %>% 
-        dplyr::summarise(gene_average = mean(counts), gene_stdev = sd(counts)) %>% 
-        ungroup() %>%
-        ggplot(., aes(x = gene_average, y = gene_stdev)) +
-        geom_point(alpha = 0.5, fill = "grey", colour = "black") +
-          labs(x = "Gene count average", 
-               y = "Gene count standard deviation") +
-          ggtitle("Mean - Standard deviation relationship")
-      ggarrange(p1, p2, nrow = 1)
-      ggsave(filename = paste0("./output/figures/sct_",disorder,"_",CT,".jpeg"), width = 11, height = 5.5)
-      
-      # initialize if first loop      
-      if(disorder == "Control" & CT == "Vip"){
-        res = data.frame(gene = rownames(sct_matrix),
-                         mean = rowMeans(sct_matrix),
-                         sd = rowSds(sct_matrix),
-                         cell_type = CT,
-                         condition = disorder)
-      } else {
-        tmp = data.frame(gene = rownames(sct_matrix),
-                         mean = rowMeans(sct_matrix),
-                         sd = rowSds(sct_matrix),
-                         cell_type = CT,
-                         condition = disorder)
-        res = rbind(res, tmp)
-      }
-      rm(sct_matrix)
-      gc()
-      print(CT)
-    }
-    print(disorder)
+# split cells by subclass and subject
+# this amounts to calculating intra-individual variability within cells types 
+for(CT in unique(metadata$l2)){
+  for(INDV in unique(metadata$Name)){
+    # subset
+    seu_tmp = subset(seu_obj_norm, subset = l2 == CT & Name == INDV)
+    # get normalized expression matrix (Pearson residuals)
+    # NOTE: only 3000 variable genes are stored (residuals are non-zero and therefore can't be save in a sparse matrix)
+    sct_matrix = seu_tmp@assays$SCT@scale.data %>% as.matrix() 
+    dim(sct_matrix)
+    # get model attributes
+    # use this instead because the mean and variance of the residuals are available for every gene 
+    sct_model_df = seu_tmp@assays$SCT@SCTModel.list$model1@feature.attributes
+    
+    # get gene-wise coefficient of variation (Stdev/Mean*100)
+    tmp = data.frame(Name = INDV,
+                     Gene = rownames(sct_model_df),
+                     Mean = sct_model_df$residual_mean,
+                     Stdev = sqrt(sct_model_df$residual_variance)) %>%
+      mutate(CV = Stdev/(Mean*100))
+    # save
+    res = rbind(res, tmp)
+    # visualize gene mean-variance relationship
+    sct_model_df %>%
+      as.data.frame() %>%
+      ggplot(., aes(x = log10(gmean), y = residual_variance)) +
+      geom_point(alpha = 0.5, fill = "grey", colour = "black") +
+      geom_density_2d(size = 0.3) +
+        labs(x = "Log10(Geometric Mean)", 
+             y = "Residual variance") +
+        ggtitle("Gene Mean-Variance Relationship") 
+    ggsave(filename = paste0("./output/figures/qc/sct_",INDV,"_",CT,".jpeg"), width = 6, height = 5.5)
   }
 }
-#write.csv(res, file = "./output/res.csv")
+res = left_join(res, distinct(samples_metadata[,-(6:7)]), by = "Name")
+summary(res$CV)
+# save results 
+write.csv(res, file = "./output/res.csv")
 
 ```
 
 # visualize
 ```{r}
+# load 
 res = read.csv(file = "./output/res.csv") %>% column_to_rownames(var = "X")
 
 # get genes significantly associated with membrane potential and rheobase
