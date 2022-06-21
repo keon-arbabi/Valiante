@@ -17,7 +17,7 @@ suppressPackageStartupMessages({
   library(tidyverse)
   library(GEOquery)
   library(limma)
-  library(HelpersMG)
+  #library(HelpersMG)
   library(Seurat)
   library(glmGamPoi)
   library(matrixStats)
@@ -47,6 +47,33 @@ convertMouseGeneList = function(x){
   print(head(mousex))
   return(genesV2)
 }
+
+# https://github.com/satijalab/sctransform/blob/master/R/utils.R
+row_gmean <- function(x, eps = 1) {
+  if (inherits(x = x, what = 'matrix')) {
+    return(exp(rowMeans(log(x + eps))) - eps)
+  }
+  if (inherits(x = x, what = 'dgCMatrix')) {
+    ret <- row_gmean_dgcmatrix(matrix = x, eps = eps)
+    names(ret) <- rownames(x)
+    return(ret)
+  }
+  stop('matrix x needs to be of class matrix or dgCMatrix')
+}
+row_var <- function(x) {
+  if (inherits(x = x, what = 'matrix')) {
+    ret <- rowVars(x)
+    names(ret) <- rownames(x)
+    return(ret)
+  }
+  if (inherits(x = x, what = 'dgCMatrix')) {
+    ret <- row_var_dgcmatrix(x = x@x, i = x@i, rows = nrow(x), cols = ncol(x))
+    names(ret) <- rownames(x)
+    return(ret)
+  }
+  stop('matrix x needs to be of class matrix or dgCMatrix')
+}
+
 ```
 
 # prepare data 
@@ -89,6 +116,7 @@ rownames(metadata) = metadata$cell
 counts_matrix = counts_matrix[,colnames(counts_matrix) %in% metadata$cell]
 dim(counts_matrix)
 metadata = metadata %>% filter(cell %in% colnames(counts_matrix))
+write.csv(metadata, file = "./output/metadata.csv")
 
 # create Seurat object
 seu_obj = CreateSeuratObject(counts = counts_matrix, meta.data = metadata)
@@ -97,9 +125,9 @@ head(x = colnames(x = seu_obj))
 
 # # normalize
 # # https://doi.org/10.1186/s13059-019-1874-1
-# seu_obj = SCTransform(seu_obj, method = "glmGamPoi", verbose = TRUE)
+# seu_obj_norm = SCTransform(seu_obj, method = "glmGamPoi", verbose = TRUE, return.only.var.genes = FALSE)
 # # save Seurat object
-# saveRDS(seu_obj, file = "./output/seu_obj.rds")
+# saveRDS(seu_obj_norm, file = "./output/seu_obj_norm.rds")
 
 ```
 
@@ -107,6 +135,7 @@ head(x = colnames(x = seu_obj))
 ```{r}
 # load normalized Seurat object 
 seu_obj_norm = readRDS(file = "./output/seu_obj_norm.rds")
+metadata = read.csv(file = "./output/metadata.csv", row.names = "X")
 table(metadata$Name, metadata$l2)
 # remove subject with low cell counts 
 seu_obj_norm = subset(seu_obj_norm, subset = Name == "HB51", invert = TRUE)
@@ -119,37 +148,35 @@ res = NULL
 for(CT in unique(metadata$l2)){
   for(INDV in unique(metadata$Name)){
     # subset
-    seu_tmp = subset(seu_obj_norm, subset = l2 == CT & Name == INDV)
+    seu_obj_tmp = subset(seu_obj_norm, subset = l2 == CT & Name == INDV)
     # get normalized expression matrix (Pearson residuals)
-    # NOTE: only 3000 variable genes are stored (residuals are non-zero and therefore can't be save in a sparse matrix)
-    sct_matrix = seu_tmp@assays$SCT@scale.data %>% as.matrix() 
+    sct_matrix = seu_obj_tmp@assays$SCT@scale.data %>% as.matrix() 
     dim(sct_matrix)
     # get model attributes
-    # use this instead because the mean and variance of the residuals are available for every gene 
-    sct_model_df = seu_tmp@assays$SCT@SCTModel.list$model1@feature.attributes
-    
+    sct_model_df = seu_obj_tmp@assays$SCT@SCTModel.list$model1@feature.attributes
     # get gene-wise coefficient of variation (Stdev/Mean*100)
     tmp = data.frame(Name = INDV,
-                     Gene = rownames(sct_model_df),
-                     Mean = sct_model_df$residual_mean,
-                     Stdev = sqrt(sct_model_df$residual_variance)) %>%
+                     Cell_type = CT,
+                     Gene = rownames(sct_matrix),
+                     Mean = rowMeans(sct_matrix),
+                     Var = rowVars(sct_matrix),
+                     Stdev = rowSds(sct_matrix)) %>%
       mutate(CV = Stdev/(Mean*100))
     # save
     res = rbind(res, tmp)
-    # visualize gene mean-variance relationship
-    sct_model_df %>%
-      as.data.frame() %>%
-      ggplot(., aes(x = log10(gmean), y = residual_variance)) +
-      geom_point(alpha = 0.5, fill = "grey", colour = "black") +
-      geom_density_2d(size = 0.3) +
-        labs(x = "Log10(Geometric Mean)", 
-             y = "Residual variance") +
-        ggtitle("Gene Mean-Variance Relationship") 
-    ggsave(filename = paste0("./output/figures/qc/sct_",INDV,"_",CT,".jpeg"), width = 6, height = 5.5)
+    # # visualize gene mean-variance relationship
+    # tmp %>%
+    #   as.data.frame() %>%
+    #   ggplot(., aes(x = log10(Mean), y = Var)) +
+    #   geom_point(alpha = 0.5, fill = "grey", colour = "black") +
+    #   geom_density_2d(size = 0.3) +
+    #     labs(x = "Log10(Mean expression)", 
+    #          y = "Residual variance") +
+    #     ggtitle("Gene Mean-Variance Relationship") 
+    # ggsave(filename = paste0("./figures/qc/sct_",INDV,"_",CT,".jpeg"), width = 6, height = 5.5)
   }
 }
-res = left_join(res, distinct(samples_metadata[,-(6:7)]), by = "Name")
-summary(res$CV)
+res = left_join(res, distinct(metadata[,c(6:10)]), by = "Name") 
 # save results 
 write.csv(res, file = "./output/res.csv")
 
