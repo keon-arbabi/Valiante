@@ -143,6 +143,10 @@ metadata = metadata %>% filter(!Name == "HB51")
 # initialize
 res = NULL
 
+# get model attributes
+sct_model_df = seu_obj_norm@assays$SCT@SCTModel.list$model1@feature.attributes
+write.csv(sct_model_df, file = "./output/sct_model_df.csv")
+
 # split cells by subclass and subject
 # this amounts to calculating intra-individual variability within cells types 
 for(CT in unique(metadata$l2)){
@@ -152,8 +156,6 @@ for(CT in unique(metadata$l2)){
     # get normalized expression matrix (Pearson residuals)
     sct_matrix = seu_obj_tmp@assays$SCT@scale.data %>% as.matrix() 
     dim(sct_matrix)
-    # get model attributes
-    sct_model_df = seu_obj_tmp@assays$SCT@SCTModel.list$model1@feature.attributes
     # get gene-wise coefficient of variation (Stdev/Mean*100)
     tmp = data.frame(Name = INDV,
                      Cell_type = CT,
