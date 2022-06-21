@@ -3,6 +3,4 @@
 .RData
 .Ruserdata
 input
-output/seu_obj.rds
-output/seu_obj_norm.rds
-output/res.csv
+output
