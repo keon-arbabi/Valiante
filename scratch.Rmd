@@ -15,24 +15,19 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 suppressPackageStartupMessages({
   library(tidyverse)
+  library(data.table)
   library(GEOquery)
   library(limma)
-  #library(HelpersMG)
+  library(HelpersMG)
   library(Seurat)
   library(glmGamPoi)
   library(matrixStats)
   library(ggpubr)
+  library(grid)
+  library(gridExtra)
+  library(cowplot)
   library(ggbeeswarm)
 })
-```
-
-# download data
-```{r}
-if(F){
-  wget(c("http://pklab.med.harvard.edu/viktor/publications/Epilepsy19/count_matrices.rds",
-         "http://pklab.med.harvard.edu/viktor/publications/Epilepsy19/con_filt_cells.rds",
-         "http://pklab.med.harvard.edu/viktor/publications/Epilepsy19/con_filt_samples.rds"))
-}
 ```
 
 # functions
@@ -49,31 +44,27 @@ convertMouseGeneList = function(x){
 }
 
 # https://github.com/satijalab/sctransform/blob/master/R/utils.R
-row_gmean <- function(x, eps = 1) {
+row_gmean = function(x, eps = 1) {
   if (inherits(x = x, what = 'matrix')) {
     return(exp(rowMeans(log(x + eps))) - eps)
   }
   if (inherits(x = x, what = 'dgCMatrix')) {
-    ret <- row_gmean_dgcmatrix(matrix = x, eps = eps)
-    names(ret) <- rownames(x)
-    return(ret)
-  }
-  stop('matrix x needs to be of class matrix or dgCMatrix')
-}
-row_var <- function(x) {
-  if (inherits(x = x, what = 'matrix')) {
-    ret <- rowVars(x)
-    names(ret) <- rownames(x)
-    return(ret)
-  }
-  if (inherits(x = x, what = 'dgCMatrix')) {
-    ret <- row_var_dgcmatrix(x = x@x, i = x@i, rows = nrow(x), cols = ncol(x))
-    names(ret) <- rownames(x)
+    ret = row_gmean_dgcmatrix(matrix = x, eps = eps)
+    names(ret) = rownames(x)
     return(ret)
   }
   stop('matrix x needs to be of class matrix or dgCMatrix')
 }
 
+```
+
+# download data
+```{r}
+if(F){
+  wget(c("http://pklab.med.harvard.edu/viktor/publications/Epilepsy19/count_matrices.rds",
+         "http://pklab.med.harvard.edu/viktor/publications/Epilepsy19/con_filt_cells.rds",
+         "http://pklab.med.harvard.edu/viktor/publications/Epilepsy19/con_filt_samples.rds"))
+}
 ```
 
 # prepare data 
@@ -122,6 +113,8 @@ write.csv(metadata, file = "./output/metadata.csv")
 seu_obj = CreateSeuratObject(counts = counts_matrix, meta.data = metadata)
 head(x = rownames(x = seu_obj))
 head(x = colnames(x = seu_obj))
+rm(counts_lst, counts_matrix)
+gc()
 
 # # normalize
 # # https://doi.org/10.1186/s13059-019-1874-1
@@ -145,7 +138,7 @@ res = NULL
 
 # get model attributes
 sct_model_df = seu_obj_norm@assays$SCT@SCTModel.list$model1@feature.attributes
-write.csv(sct_model_df, file = "./output/sct_model_df.csv")
+#write.csv(sct_model_df, file = "./output/sct_model_df.csv")
 
 # split cells by subclass and subject
 # this amounts to calculating intra-individual variability within cells types 
@@ -156,72 +149,151 @@ for(CT in unique(metadata$l2)){
     # get normalized expression matrix (Pearson residuals)
     sct_matrix = seu_obj_tmp@assays$SCT@scale.data %>% as.matrix() 
     dim(sct_matrix)
+    # get normalized counts matrix
+    norm_counts_matrix = seu_obj_tmp@assays$SCT@counts %>% as.matrix()
+    dim(norm_counts_matrix)
     # get gene-wise coefficient of variation (Stdev/Mean*100)
     tmp = data.frame(Name = INDV,
                      Cell_type = CT,
                      Gene = rownames(sct_matrix),
+                     N_cells = ncol(sct_matrix),
+                     N_NonZero = rowSums(norm_counts_matrix != 0),
+                     Pct_NonZero = rowSums(norm_counts_matrix != 0)/ncol(norm_counts_matrix),
                      Mean = rowMeans(sct_matrix),
                      Var = rowVars(sct_matrix),
                      Stdev = rowSds(sct_matrix)) %>%
       mutate(CV = Stdev/(Mean*100))
     # save
     res = rbind(res, tmp)
-    # visualize gene mean-variance relationship
-    tmp %>%
-      as.data.frame() %>%
-      ggplot(., aes(x = log10(Mean), y = Var)) +
-      geom_point(alpha = 0.5, fill = "grey", colour = "black") +
-      geom_density_2d(size = 0.3) +
-        labs(x = "Log10(Mean expression)",
-             y = "Residual variance") +
-        ggtitle("Gene Mean-Variance Relationship")
-    ggsave(filename = paste0("./figures/qc/sct_",INDV,"_",CT,".jpeg"), width = 6, height = 5.5)
+    # # visualize gene mean-variance relationship
+    # tmp %>%
+    #   as.data.frame() %>%
+    #   ggplot(., aes(x = log10(Mean), y = Var)) +
+    #   geom_point(alpha = 0.5, fill = "grey", colour = "black") +
+    #   geom_density_2d(size = 0.3) +
+    #     labs(x = "Log10(Mean expression)",
+    #          y = "Residual variance") +
+    #     ggtitle("Gene Mean-Variance Relationship")
+    # ggsave(filename = paste0("./figures/qc/sct_",INDV,"_",CT,".jpeg"), width = 6, height = 5.5)
   }
 }
 res = left_join(res, distinct(metadata[,c(6:10)]), by = "Name") 
 # save results 
-write.csv(res, file = "./output/res.csv")
+#write.csv(res, file = "./output/res.csv")
 
 ```
 
 # visualize
 ```{r}
 # load 
-res = read.csv(file = "./output/res.csv") %>% column_to_rownames(var = "X")
-# total mean-variance trend
-ggplot(res, aes(x = log10(Mean), y = Var)) +
-      geom_point(alpha = 0.5, fill = "grey", colour = "black") +
-      geom_density_2d(size = 0.3) +
-        labs(x = "Log10(Mean expression)",
-             y = "Residual variance") +
-        ggtitle("Gene Mean-Variance Relationship")
+res = fread(file = "./output/res.csv", data.table = FALSE) %>% column_to_rownames(var = "V1")
+res_filt = res %>% filter(N_NonZero > 0)
 
-# get genes significantly associated with membrane potential and rheobase
-select_genes = read.csv(file = "./input/Tripathy_2017_ephys_genes.csv")[,-1] %>%
-  dplyr::rename(MGI.symbol = GeneSymbol)
-# convert mouse genes 
-hgnc = convertMouseGeneList(select_genes$MGI.symbol)
-# filter
-select_genes = left_join(select_genes, hgnc, by = "MGI.symbol") 
-select_genes = select_genes %>% filter(EphysProp %in% c("Vrest","Rheo")) %>% pull(HGNC.symbol)
+# distributions
+ggplot(res_filt, aes(x = Mean)) + # mean
+  geom_histogram(bins = 100) + geom_vline(xintercept = median(res_filt$Mean), color = "red") + scale_x_continuous(limits = c(-1, 1)) + theme_classic()
+ggplot(res_filt, aes(x = Var)) + # variance
+  geom_histogram(bins = 100) + geom_vline(xintercept = median(res_filt$Var), color = "red") + scale_x_continuous(limits = c(-0.5, quantile(res_filt$Var, 0.99))) + theme_classic()
+ggplot(res_filt, aes(x = Stdev)) + # standard deviation
+  geom_histogram(bins = 100) + geom_vline(xintercept = median(res_filt$Stdev), color = "red") + scale_x_continuous(limits = c(-0.5, quantile(res_filt$Stdev, 0.99))) + theme_classic()
+ggplot(res_filt, aes(x = CV)) + # coefficient of variation
+  geom_histogram(bins = 150) + geom_vline(xintercept = median(res_filt$CV), color = "red") + scale_x_continuous(limits = c(-1, 1)) + theme_classic()
+# by cell
+ggplot(res_filt, aes(x = Mean)) +
+  geom_histogram(bins = 100) + geom_vline(xintercept = median(res_filt$Mean), color = "red") + scale_x_continuous(limits = c(-1, 1)) + theme_classic() + facet_wrap(~ Cell_type)
+ggplot(res_filt, aes(x = Stdev)) + 
+  geom_histogram(bins = 100) + geom_vline(xintercept = median(res_filt$Stdev), color = "red") + scale_x_continuous(limits = c(-0.5, quantile(res_filt$Stdev, 0.99))) + theme_classic() + facet_wrap(~ Cell_type)
+
+# get genes that are correlates of electrophysiology
+# https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1005814
+ephys_genes = read.csv(file = "./input/Tripathy_2017_ephys_genes.csv")[,-1] %>% dplyr::rename(MGI.symbol = GeneSymbol)
+# convert from mouse genes 
+hgnc = convertMouseGeneList(ephys_genes$MGI.symbol)
+ephys_genes = left_join(ephys_genes, hgnc, by = "MGI.symbol") %>% 
+  filter(EphysProp %in% c("Rheo","Vrest"), HGNC.symbol %in% intersect(HGNC.symbol, res_filt$Gene)) %>% pull(HGNC.symbol) %>% unique()
+
+# get genes coding proteins with detected expression in human brain
+# https://www.proteinatlas.org/search/NOT+tissue_category_rna%3Abrain%3BNot+detected
+brain_genes = read_tsv(file = "./input/tissue_category_rna_brain_Tissue_detected.tsv", show_col_types = F) %>% 
+  filter(Gene %in% intersect(Gene, res_filt$Gene)) %>% pull(Gene) %>% unique()
+
+sim = NULL
+res_sim = NULL
+plot_lst = NULL
+
+for(cx in unique(res_filt$Condition)){
+  for(ct in unique(res_filt$Cell_type)){
+    for(i in 1:10000){
+      # simulate distribution of average standard deviations 
+      null_mean = res_filt %>% filter(Condition == cx, Cell_type == ct, Gene %in% sample(brain_genes, length(ephys_genes)))
+      null_mean = mean(null_mean$Stdev)
+      sim = c(sim, null_mean)
+      paste(cx,ct,i)
+    }
+    # get average standard deviation of ephys genes 
+    h_mean = res_filt %>% filter(Condition == cx, Cell_type == ct, Gene %in% ephys_genes)
+    h_mean = mean(h_mean$Stdev)
+    # empirical distribution function for calculating exact p-value 
+    d_fun = ecdf(sim)
+    p_val = d_fun(h_mean)
+    #plot(d_fun,  main = paste("empirical distribution function",10000,"iterations"))
+    # save results
+    tmp = data.table(Condition = cx, Cell_typ = ct, Null_mean = null_mean, H_mean = h_mean, P_val = p_val)
+    res_sim = rbind(res_sim, tmp)
+    # save plot
+    plot_lst[[paste(cx,ct)]] = data.frame(val = sim) %>%
+      ggplot(., aes(val)) + 
+      geom_histogram(aes(y = ..density..), bins = 100, fill = "grey") + 
+      stat_function(fun = dnorm, args = list(mean = mean(sim), sd = sd(sim))) +
+      geom_vline(xintercept = mean(h_mean), color = "red") +
+      labs(x = "St. Dev", y = "Count", title = paste(cx,ct,"\np-value:",round(p_val,4),"\nshapiro test:",round(as.numeric(shapiro.test(sample(sim,10))['p.value']),4))) +
+      theme_classic() 
+  }
+}
+grid.arrange(grobs = plot_lst, ncol = 4, nrow = ceiling(length(plot_lst)/4))
+
+
+  
+
+
+
+
+
+
+
+
+
+
+
+# load GO biological function gene sets 
+go_genes = read_rds(file = "./input/go_genes.rds")
+# filter to sets roughly the size of our ephys genes 
+keep = lengths(go_genes) > 300 & lengths(go_genes) < 700
+go_genes = go_genes[keep]
+
+go_vars = sapply(go_genes, function(x){
+  res %>% filter(Gene %in% x) %>% pull(Stdev) 
+})
+hist(unlist(go_vars), breaks = 100)
+
 
 # get same number of random, protein-coding genes for comparison
-mart = biomaRt::useMart(biomart = "ensembl", dataset = "hsapiens_gene_ensembl")
-protein_genes = biomaRt::getBM(attributes = c("hgnc_symbol", "gene_biotype"), filters = c("hgnc_symbol", "biotype"), values = list(unique(res$gene), "protein_coding"), mart = mart)
-random_genes = intersect(res$gene, protein_genes$hgnc_symbol) %>% sample(.,length(select_genes), replace = FALSE)
+mart = biomaRt::useMart(biomart = "ensembl", dataset = "hsapiens_gene_ensembl", host = "https://dec2021.archive.ensembl.org/")
+protein_genes = biomaRt::getBM(attributes = c("hgnc_symbol", "gene_biotype"), filters = c("hgnc_symbol", "biotype"), values = list(unique(res$Gene), "protein_coding"), mart = mart)
+random_genes = intersect(res$Gene, protein_genes$hgnc_symbol) %>% sample(.,length(select_genes), replace = FALSE)
 
-res_select_control = res %>% filter(Gene %in% select_genes, condition == "Control") 
-res_select_epilepsy = res %>% filter(Gene %in% select_genes, condition == "Epilepsy") 
+res_select_control = res %>% filter(Gene %in% select_genes, Condition == "Control") 
+res_select_epilepsy = res %>% filter(Gene %in% select_genes, Condition == "Epilepsy") 
 
 # mean-sd plot colored by condition for ephys associated genes 
 res %>%
-  ggplot(aes(x = mean, y = sd)) +
+  ggplot(aes(x = Mean, y = Stdev)) +
   geom_point(alpha = 0.1, shape = 16) +
-  geom_point(data = res_select_control, aes(x = mean, y = sd), color = "darkgreen", alpha = 0.5, size = 2, shape = 16) +
-  geom_point(data = res_select_epilepsy, aes(x = mean, y = sd), color = "darkorange", alpha = 0.5, size = 2, shape = 16) +
+  geom_point(data = res_select_control, aes(x = Mean, y = Stdev), color = "darkgreen", alpha = 0.5, size = 2, shape = 16) +
+  geom_point(data = res_select_epilepsy, aes(x = Mean, y = Stdev), color = "darkorange", alpha = 0.5, size = 2, shape = 16) +
   labs(x = "mean normalized expression", y = "expression standard deviation") +
   theme_classic()
-#ggsave(filename = paste0("./output/figures/ephy_genes_meansd.jpeg"), width = 9, height = 5)
+ggsave(filename = paste0("./output/figures/ephy_genes_meansd.jpeg"), width = 9, height = 5)
 
 # compare expression sd 
 res %>%
@@ -238,7 +310,7 @@ res %>%
   theme_classic() +
   theme(legend.position = "none") +
   stat_compare_means(method = "wilcox", aes(group = condition), label.y = 1, label.x = 0.6, size = 3)
-#ggsave(filename = paste0("./output/figures/ephy_genes_sdboxplots.jpeg"), width = 9, height = 6)
+ggsave(filename = paste0("./output/figures/ephy_genes_sdboxplots.jpeg"), width = 9, height = 6)
 
 # compare expression sd by CT
 res %>%
