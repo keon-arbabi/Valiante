@@ -17,6 +17,7 @@ suppressPackageStartupMessages({
   library(tidyverse)
   library(data.table)
   library(GEOquery)
+  library(edgeR)
   library(limma)
   library(HelpersMG)
   library(Seurat)
@@ -27,7 +28,10 @@ suppressPackageStartupMessages({
   library(gridExtra)
   library(cowplot)
   library(ggbeeswarm)
-})
+  library(qusage)
+  library(gplots)
+  library(colorspace)
+  })
 ```
 
 # functions
@@ -183,7 +187,7 @@ res = left_join(res, distinct(metadata[,c(6:10)]), by = "Name")
 
 ```
 
-# visualize
+# comparison 
 ```{r}
 # load 
 res = fread(file = "./output/res.csv", data.table = FALSE) %>% column_to_rownames(var = "V1")
@@ -216,122 +220,165 @@ ephys_genes = left_join(ephys_genes, hgnc, by = "MGI.symbol") %>%
 # https://www.proteinatlas.org/search/NOT+tissue_category_rna%3Abrain%3BNot+detected
 brain_genes = read_tsv(file = "./input/tissue_category_rna_brain_Tissue_detected.tsv", show_col_types = F) %>% 
   filter(Gene %in% intersect(Gene, res_filt$Gene)) %>% pull(Gene) %>% unique()
+random_genes = sample(brain_genes, length(ephys_genes))
 
-sim = NULL
-res_sim = NULL
-plot_lst = NULL
-
-for(cx in unique(res_filt$Condition)){
-  for(ct in unique(res_filt$Cell_type)){
-    for(i in 1:10000){
-      # simulate distribution of average standard deviations 
-      null_mean = res_filt %>% filter(Condition == cx, Cell_type == ct, Gene %in% sample(brain_genes, length(ephys_genes)))
-      null_mean = mean(null_mean$Stdev)
-      sim = c(sim, null_mean)
-      paste(cx,ct,i)
-    }
-    # get average standard deviation of ephys genes 
-    h_mean = res_filt %>% filter(Condition == cx, Cell_type == ct, Gene %in% ephys_genes)
-    h_mean = mean(h_mean$Stdev)
-    # empirical distribution function for calculating exact p-value 
-    d_fun = ecdf(sim)
-    p_val = d_fun(h_mean)
-    #plot(d_fun,  main = paste("empirical distribution function",10000,"iterations"))
-    # save results
-    tmp = data.table(Condition = cx, Cell_typ = ct, Null_mean = null_mean, H_mean = h_mean, P_val = p_val)
-    res_sim = rbind(res_sim, tmp)
-    # save plot
-    plot_lst[[paste(cx,ct)]] = data.frame(val = sim) %>%
-      ggplot(., aes(val)) + 
-      geom_histogram(aes(y = ..density..), bins = 100, fill = "grey") + 
-      stat_function(fun = dnorm, args = list(mean = mean(sim), sd = sd(sim))) +
-      geom_vline(xintercept = mean(h_mean), color = "red") +
-      labs(x = "St. Dev", y = "Count", title = paste(cx,ct,"\np-value:",round(p_val,4),"\nshapiro test:",round(as.numeric(shapiro.test(sample(sim,10))['p.value']),4))) +
-      theme_classic() 
-  }
-}
-grid.arrange(grobs = plot_lst, ncol = 4, nrow = ceiling(length(plot_lst)/4))
-
-
-  
-
-
-
-
-
-
-
-
-
-
-
-# load GO biological function gene sets 
-go_genes = read_rds(file = "./input/go_genes.rds")
-# filter to sets roughly the size of our ephys genes 
-keep = lengths(go_genes) > 300 & lengths(go_genes) < 700
-go_genes = go_genes[keep]
-
-go_vars = sapply(go_genes, function(x){
-  res %>% filter(Gene %in% x) %>% pull(Stdev) 
-})
-hist(unlist(go_vars), breaks = 100)
-
-
-# get same number of random, protein-coding genes for comparison
-mart = biomaRt::useMart(biomart = "ensembl", dataset = "hsapiens_gene_ensembl", host = "https://dec2021.archive.ensembl.org/")
-protein_genes = biomaRt::getBM(attributes = c("hgnc_symbol", "gene_biotype"), filters = c("hgnc_symbol", "biotype"), values = list(unique(res$Gene), "protein_coding"), mart = mart)
-random_genes = intersect(res$Gene, protein_genes$hgnc_symbol) %>% sample(.,length(select_genes), replace = FALSE)
-
-res_select_control = res %>% filter(Gene %in% select_genes, Condition == "Control") 
-res_select_epilepsy = res %>% filter(Gene %in% select_genes, Condition == "Epilepsy") 
-
-# mean-sd plot colored by condition for ephys associated genes 
-res %>%
-  ggplot(aes(x = Mean, y = Stdev)) +
-  geom_point(alpha = 0.1, shape = 16) +
-  geom_point(data = res_select_control, aes(x = Mean, y = Stdev), color = "darkgreen", alpha = 0.5, size = 2, shape = 16) +
-  geom_point(data = res_select_epilepsy, aes(x = Mean, y = Stdev), color = "darkorange", alpha = 0.5, size = 2, shape = 16) +
-  labs(x = "mean normalized expression", y = "expression standard deviation") +
-  theme_classic()
-ggsave(filename = paste0("./output/figures/ephy_genes_meansd.jpeg"), width = 9, height = 5)
+plot_df = res_filt %>%
+  #filter(Gene %in% c(ephys_genes, random_genes)) %>%
+  mutate(Gene_group = case_when(Gene %in% ephys_genes ~ "Vrest & rheobase associated genes (n = 277)", 
+                                Gene %in% random_genes ~ "Random brain-expressed genes (n = 277)", TRUE ~ "All genes (n = 28,479)")) %>% 
+  group_by(Condition, Cell_type, Gene) %>%
+  mutate(Mean_Stdev = mean(Stdev)) %>%
+  distinct(Condition, Cell_type, Gene, .keep_all = TRUE) 
 
 # compare expression sd 
-res %>%
-  mutate(ephys_gene = case_when(gene %in% select_genes ~ "Vrest & rheobase associated genes", 
-                                gene %in% random_genes ~ "Random protein-coding genes",
-                                TRUE ~ "All genes")) %>% 
-  mutate(ephys_gene, factor(ephys_gene)) %>%
-  ggplot(aes(x = condition, y = sd)) + 
-  geom_boxplot(aes(fill = condition)) +
+ggplot(plot_df, aes(x = Condition, y = Mean_Stdev)) +
+  geom_violin(aes(fill = Condition), alpha = 1) +
+  geom_boxplot(fill = "white", outlier.shape= NA, width = 0.2) +
+  scale_y_continuous(trans = "log10", limits = c(quantile(plot_df$Mean_Stdev, 0.01), quantile(plot_df$Mean_Stdev, 0.99))) +
   scale_fill_manual(breaks = c("Control","Epilepsy"), values = c("darkgreen","darkorange")) +
   labs(x = "condition", y = "standard deviation of expression") +
   coord_flip() +
-  facet_wrap(~ephys_gene, ncol = 1) +
+  facet_wrap(~ Gene_group, ncol = 1) +
   theme_classic() +
   theme(legend.position = "none") +
-  stat_compare_means(method = "wilcox", aes(group = condition), label.y = 1, label.x = 0.6, size = 3)
-ggsave(filename = paste0("./output/figures/ephy_genes_sdboxplots.jpeg"), width = 9, height = 6)
+  stat_compare_means(method = "t.test", aes(group = Condition), label.y = 0.2, label.x = 1.5,  size = 3)
+#ggsave(filename = paste0("./figures/ephy_genes_mean_violin.jpeg"), width = 9, height = 6)
 
-# compare expression sd by CT
-res %>%
-  mutate(ephys_gene = case_when(gene %in% select_genes ~ "Vrest & rheobase associated genes", 
-                                gene %in% random_genes ~ "Random protein-coding genes",
-                                TRUE ~ "All genes")) %>% 
-  #filter(gene %in% select_genes) %>%
-  ggplot(aes(x = condition, y = mean)) + 
-  geom_boxplot(aes(fill = condition), outlier.shape = NA) +
-  geom_quasirandom(na.rm = T, shape = 16, alpha = 0.1) + 
+# compare expression sd by cell type
+plot_df = plot_df %>% filter(!Gene_group == "All genes (n = 28,479)")
+ggplot(plot_df, aes(x = Condition, y = Mean_Stdev)) + 
+  geom_boxplot(aes(fill = Condition), outlier.shape = NA) +
+  geom_quasirandom(na.rm = T, shape = 16, alpha = 0.1, size = 0.6) + 
+  scale_y_continuous(trans = "log10", limits = c(quantile(plot_df$Mean_Stdev, 0.01), quantile(plot_df$Mean_Stdev, 0.99))) +
   scale_fill_manual(breaks = c("Control","Epilepsy"), values = c("darkgreen","darkorange")) +
   labs(x = "condition", y = "standard deviation of expression") +
   coord_flip() +
-  facet_grid(cell_type ~ ephys_gene, scales = "free") +
+  facet_grid(Cell_type ~ Gene_group, scales = "free") +
   theme_classic() +
   theme(legend.position = "none") +
-  stat_compare_means(ref.group = "Control", label = "p.signif", method = "wilcox", label.y = 0.8) 
-ggsave(filename = paste0("./output/figures/ephy_genes_sdboxplots2.jpeg"), width = 9, height = 12)
+  stat_compare_means(ref.group = "Control", label = "p.signif", method = "wilcox") 
+ggsave(filename = paste0("./figures/ephy_genes_sd_violin_ct.jpeg"), width = 9, height = 6.5)
 
-  
+
+# get patholophysiologically related GO terms and genes 
+# sample to same set size
+go_ecm_genes = read.table(file = "./input/GO_0030198.txt", fill = T)[2] %>% unlist() %>% sample(.,length(ephys_genes)) # extracellular matrix organization
+go_immune_genes = read.table(file = "./input/GO_0002253.txt", fill = T)[2] %>% unlist() %>% sample(.,length(ephys_genes)) # activation of immune response
+go_mapk_genes = read.table(file = "./input/GO_0043408.txt", fill = T)[2] %>% unlist() %>% sample(.,length(ephys_genes)) # regulation of MAPK cascade
+go_axondev_genes = read.table(file = "./input/GO_0061564.txt", fill = T)[2] %>% unlist() %>% sample(.,length(ephys_genes)) # axon development
+go_ap_genes = read.table(file = "./input/GO_0001508.txt", fill = T)[2] %>% unlist() # action potential
+
+# get random GO terms and genes 
+go_genes = read_rds(file = "./input/go_genes.rds")
+# sample to roughly the same set size
+keep = lengths(go_genes) > 250 & lengths(go_genes) < 300
+go_genes = go_genes[keep]
+go_rand_genes1 = sample(go_genes,1) %>% unlist()
+go_rand_genes2 = sample(go_genes,1) %>% unlist()
+go_rand_genes3 = sample(go_genes,1) %>% unlist()
+
+gene_set_lst = list(ephys_genes, go_ecm_genes, go_immune_genes, go_mapk_genes, go_axondev_genes, go_ap_genes, go_rand_genes1, go_rand_genes2, go_rand_genes3)
+names(gene_set_lst) = c("ephys_genes", "go_ecm_genes", "go_immune_genes", "go_mapk_genes", "go_axondev_genes", "go_ap_genes", "go_rand_genes1", "go_rand_genes2", "go_rand_genes3")
+
+## Simulation 
+# initialize 
+res_sim = NULL
+sim_lst = NULL
+plot_lst = NULL
+# loop through each condition and cell type
+for(cx in unique(res_filt$Condition)){
+  for(ct in unique(res_filt$Cell_type)){
+    sim = NULL
+    tmp = res_filt %>% filter(Condition == cx, Cell_type == ct) 
+    for(i in 1:10000){
+      # simulate distribution of average standard deviations for brain expressed genes
+      null_mean = tmp %>% filter(Gene %in% sample(brain_genes, length(ephys_genes))) # random sampling 
+      null_mean = mean(null_mean$Stdev)
+      sim = c(sim, null_mean)
+      print(paste(cx,ct,i))
+    }
+    # get average standard deviation for each gene set
+    h_means = sapply(gene_set_lst, function(x){
+      tmp %>% filter(Gene %in% x) %>% pull(Stdev) %>% mean
+    })
+    # empirical distribution function for calculating p-value (probability)
+    # of the average standard deviation of expression for ephys genes in the simulated distribution
+    d_fun = ecdf(sim)
+    p_vals = d_fun(h_means)
+    #plot(d_fun,  main = paste("empirical distribution function",10000,"iterations"))
+    
+    # save results
+    tmp = data.table(Condition = cx, Cell_type = ct, Null_mean = null_mean, H_mean = h_means, P_val = p_vals, Shapiro = shapiro.test(sample(sim,5000))['p.value'], Gene_set = names(gene_set_lst))
+    res_sim = rbind(res_sim, tmp)
+    sim_lst[[paste(cx,ct)]] = sim
+    # save plot
+    plot_lst[[paste(cx,ct)]] = data.frame(val = sim) %>%
+      ggplot(., aes(val)) +
+      geom_histogram(aes(y = ..density..), bins = 100, fill = "grey") +
+      stat_function(fun = dnorm, args = list(mean = mean(sim), sd = sd(sim))) +
+      geom_vline(xintercept = mean(h_means[1]), color = "red") +
+      labs(x = "St. Dev", y = "Count", title = paste(cx,ct,"\np-value:",p_vals[1])) +
+      theme_classic()
+  }
+}
+#write.csv(res_sim, file = "./output/res_sim.csv")
+#png(filename = "./figures/simulations.png", width = 15, height = 9,  units = "in", res = 600)
+grid.arrange(grobs = plot_lst, ncol = 4, nrow = ceiling(length(plot_lst)/4))
+#dev.off()
+
+res_sim = read.csv(file = "./output/res_sim.csv")
+
+plot_df = res_sim %>%
+  filter(!Gene_set %in% c("go_rand_genes1","go_rand_genes2","go_rand_genes3")) %>%
+  dplyr::select(Condition, Cell_type, Gene_set, P_val) %>%
+  unite(Group, Condition:Cell_type, remove = TRUE) %>%
+  pivot_wider(id_cols = Group, names_from = Gene_set, values_from = P_val) %>%
+  column_to_rownames(var = "Group") %>%
+  as.matrix()
+plot_df = plot_df[,order(colMeans(plot_df), decreasing = F)]
+
+col = choose_palette()
+col = viridis::viridis_pal()(20)
+col = rev(col)
+
+heatmap.2(plot_df, 
+          scale = "none",
+          Rowv = FALSE,
+          Colv = FALSE,
+          dendrogram = "none",
+          col = col, trace = "none",
+          cexCol = 0.9,
+          cexRow = 0.9,
+          margins = c(8,10),
+          density.info = "histogram",
+          key = TRUE, keysize = 1.2, key.title = "", key.xlab = "P-value", key.ylab = "")
+
+
 ```
+
+# differential variability testing
+```{r}
+
+for(ct in unique(res$Cell_type)){
+  pseudo_bulk = res %>%
+    filter(Cell_type == ct) %>%
+    dplyr::select(Alias, Gene, Stdev) %>%
+    pivot_wider(names_from = Alias, values_from = Stdev) %>%
+    column_to_rownames(var = "Gene")
+  group = substring(names(pseudo_bulk), 1, 1)
+  group = factor(group, levels = c("C","E"))
+  
+  dge = DGEList(pseudo_bulk, group = group)
+  dge = calcNormFactors(dge, method = "none")
+  
+}
+
+
+```
+
+
+
+
 
 
 
