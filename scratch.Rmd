@@ -212,7 +212,7 @@ res = left_join(res, distinct(metadata[,c(6:10)]), by = "Name")
 # comparison 
 ```{r}
 # load 
-res = fread(file = "./output/res.csv", data.table = FALSE) %>% column_to_rownames(var = "V1")
+res = fread(file = "./output/Pfisterer/res.csv", data.table = FALSE) %>% column_to_rownames(var = "V1")
 res_filt = res %>% filter(N_NonZero > 0)
 
 # distributions
@@ -283,6 +283,23 @@ ggplot(plot_df, aes(x = Condition, y = Mean_Stdev)) +
   theme(legend.position = "none") +
   stat_compare_means(ref.group = "Control", label = "p.signif", method = "wilcox.test") 
 ggsave(filename = paste0("./figures/ephy_genes_sd_violin_ct.jpeg"), width = 9, height = 6.5)
+
+
+# plot_df = res %>%
+#   filter(Cell_type %in% c("L5_6_Fezf2","Pvalb")) %>%
+#   filter(Pct_NonZero > 0.1, 
+#          Gene %in% ephys_genes) 
+# p2 = ggplot(plot_df, aes(x = Condition, y = Stdev, fill = Condition)) + 
+#   geom_violin() + 
+#   geom_boxplot(fill = "white", outlier.shape = NA, width = 0.4) +
+#   scale_y_continuous(trans = "log10", limits = c(quantile(plot_df$Stdev, 0.003), quantile(plot_df$Stdev, 0.999))) +
+#   scale_fill_manual(breaks = c("Control","Epilepsy"), values = c("darkgreen","darkorange")) +
+#   labs(x = "Condition", y = "gene-wise standard deviation of expression") +
+#   #coord_flip() +
+#   facet_grid(~Cell_type, scales = "free_y") +
+#   theme_classic() +
+#   theme(legend.position = "none") +
+#   stat_compare_means(method = "wilcox.test", label = "p.signif") 
 
 
 # get patholophysiologically related GO terms and genes 
